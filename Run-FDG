@@ -1,0 +1,199 @@
+library(Matrix)
+library(ic.infer)
+library(quadprog)
+
+pdf(file="C:\\Users\\lenovo\\Desktop\\RplotsAIF.pdf")
+
+duration=scan(file='C:\\Users\\lenovo\\Desktop\\Data\\duration.txt')
+x=scan(file='C:\\Users\\lenovo\\Desktop\\Data\\findFDG2.txt');nc=x[1];x=x[-1]
+m=x
+
+curve1=NULL
+curve2=NULL
+S1S=NULL
+S2S=NULL
+SHIFT=NULL
+ERR=NULL
+THETA1=NULL
+THETA2=NULL
+THETA3=NULL
+thetal=NULL
+CO1=NULL
+CO2=NULL
+MTT11=NULL
+MTT22=NULL
+ERR1=NULL
+findFDGtheta=NULL
+xout=NULL
+LAM=NULL
+CVE=NULL
+FTE=NULL
+TIME=NULL
+OTHETA=NULL
+LAs=NULL
+GCVs=NULL
+for (kkk in 1:nc) {
+Sys.sleep(.01)
+nb=m[1];m=m[-1];y=matrix(m[c(1:(2*nb))],ncol=2,byrow=T);m=m[-c(1:(2*nb))] 
+ti=y[,1];curve=y[,2]
+tt=ti;lv=curve
+zx=lv ; tx=tt ; wt=zx*0+1;tmz=tx[order(-zx)[1]]
+
+jjj=read.table('C:\\Users\\lenovo\\Desktop\\data\\FDGpoph.txt')
+covj = cov(jjj)
+out=eigen(covj,symmetric=T);g=out$vec
+v=Re(out$val)
+icovj=g%*%diag(1/v)%*%t(g)
+pi0= apply(jjj,2,mean)
+
+alpha=2.1784
+beta=7.8741
+LAM=c(11.6334 , 0.1658 , 0.0088)
+
+RES0=NULL
+S11=NULL
+las = c(0,0.00000001,0.0000001,0.000001,0.00001,0.0001,0.001,0.01,0.1,1)
+for (la in las){
+RES=NULL
+for (shift in seq(-1,1,len=21)){ # the grid search to find the optimum shift (delay)
+d=duration[kkk]
+#Calculate the boundry
+Lower=c(1,1,c(10,.1,.001)/10)
+Upper=c(2.2,8,9*c(10,.1,.001))
+#Logit transform to the propotion of non-linear parameters lying between the boundry   
+phi=rep(0,2+length(LAM))
+u=(alpha-Lower[1])/(Upper[1]-Lower[1]); phi[1]=log(u/(1-u))
+v=(beta-Lower[2])/(Upper[2]-Lower[2]); phi[2]=log(v/(1-v))
+for (i in 3:length(phi)){v=(LAM[i-2]-Lower[i])/(Upper[i]-Lower[i]) ; phi[i]=log(v/(1-v))}
+o=Model(tx,zx,wt,tmz,shift,d,phi,Upper,Lower,la,pi0,icovj)
+zh=o$pred
+RS=sum((zh-zx)^2)/length(zh)
+RSS=RS
+RES=c(RES,RSS)}
+shift=seq(-1,1,len=21)[which.min(RES)]
+o=Model(tx,zx,wt,tmz,shift,d,phi,Upper,Lower,la,pi0,icovj)
+RS0=o$GCV
+RSS0=RS0
+RES0=c(RES0,RSS0)
+
+REAL=NULL
+for (r in 2:(nb-1)){
+realt=tt[r]
+realz=lv[r]
+zx=lv[-r] ; tx=tt[-r] ; wt=zx*0+1;tmz=tx[order(-zx)[1]]
+o=Model(tx,zx,wt,tmz,shift,d,phi,Upper,Lower,la,pi0,icovj)
+x= o$out; z=x[,1];zh=x[,2]
+RR=(approx(c(tx),c(zh),realt,method = "linear", rule = 2)$y-realz)^2
+RRR=RR
+REAL=c(REAL,RRR)
+}
+REAL=REAL[-(order(-lv)[1]-1)]
+S1=sum(REAL)/(length(tt)-3)
+S11=c(S11,S1)
+}
+par(mfrow=c(1,2))
+plot(las,RES0,log='x',xlab='lam',ylab='GCV scores')
+plot(las,S11,log='x',xlab='lam',ylab='OCV errors')
+la=las[which.min(RES0)]
+RES=NULL
+for (shift in seq(-1,1,len=21)){ # the grid search to find the optimum shift (delay)
+d=duration[kkk]
+#Calculate the boundry
+Lower=c(1,1,c(10,.1,.001)/10)
+Upper=c(2.2,8,9*c(10,.1,.001))
+#Logit transform to the propotion of non-linear parameters lying between the boundry   
+phi=rep(0,2+length(LAM))
+u=(alpha-Lower[1])/(Upper[1]-Lower[1]); phi[1]=log(u/(1-u))
+v=(beta-Lower[2])/(Upper[2]-Lower[2]); phi[2]=log(v/(1-v))
+for (i in 3:length(phi)){v=(LAM[i-2]-Lower[i])/(Upper[i]-Lower[i]) ; phi[i]=log(v/(1-v))}
+o=Model(tx,zx,wt,tmz,shift,d,phi,Upper,Lower,la,pi0,icovj)
+zh=o$pred
+RS=sum((zh-zx)^2)/length(zh)
+RSS=RS
+RES=c(RES,RSS)}
+shift=seq(-1,1,len=21)[which.min(RES)]
+o=Model(tx,zx,wt,tmz,shift,d,phi,Upper,Lower,la,pi0,icovj)
+SHIFT=c(SHIFT,shift)
+LAs=c(LAs,la)
+GCVs=c(GCVs,o$GCV)
+
+thetal=rbind(thetal,o$theta)
+x= o$out; z=x[,1];zh=x[,2]
+co1=zx[length(zx)]/zx[which.max(zx)]
+co2=zh[length(zh)]/zh[which.max(zh)]
+len=10000
+ss=which.max(zx)
+txx=tx[-(1:(ss-1))];txx=txx-txx[1]
+zxx=zx[-(1:(ss-1))]
+zxxx=zxx-zxx[which.min(zxx)]
+txo=seq(from=txx[1],to=txx[length(txx)],length=len)
+zxo= approx(txx,zxxx,xout=txo,yleft=0,rule=2)$y 
+lag=(txx[length(txx)]-txx[1])/len
+zxoo=zxo/(sum(zxo)*lag)
+zxoo=zxoo*txo
+TTT1=rep(0,len)
+for (i in 1:(len-1)){TTT1[i+1]=TTT1[i]+.5*lag*(zxoo[i+1]+zxoo[i])}
+MTT1=TTT1[length(TTT1)]
+ss=which.max(zh)
+txx=tx[-(1:(ss-1))];txx=txx-txx[1]
+zhx=zh[-(1:(ss-1))]
+zxxx2=zhx-zhx[which.min(zhx)]
+txo=seq(from=txx[1],to=txx[length(txx)],length=len)
+zho= approx(txx,zxxx2,xout=txo,yleft=0,rule=2)$y 
+lag=(txx[length(txx)]-txx[1])/len
+zhoo=zho/(sum(zho)*lag)
+zhoo=zhoo*txo
+TTT2=rep(0,len)
+for (i in 1:(len-1)){TTT2[i+1]=TTT2[i]+.5*lag*(zhoo[i+1]+zhoo[i])}
+MTT2=TTT2[length(TTT2)]
+CO1=c(CO1,co1)
+CO2=c(CO2,co2)
+MTT11=c(MTT11,MTT1)
+MTT22=c(MTT22,MTT2)
+curve1=cbind(curve1,zx)
+curve2=cbind(curve2,zh)
+
+oooo1=zx
+oooo2=zh
+xout=o$out
+par(mfrow=c(1,2))
+matplot(sqrt(tx),xout,type="pllll",col=c(1,seq(from=1,to=ncol(xout)-1,len=ncol(xout)-1)),
+pch=16,lty=c(2,rep(1,length(LAM)+1)),main="New Model",ylab="",xlab="sqrt(Time)")
+legend("topright", legend = c("f1", "f2","f3"),
+lty=c(1),lwd=c(2),col=seq(from=2,to=ncol(xout)-1,len=ncol(xout)-2))
+matplot(sqrt(tx),cbind(xout[,1],xout[,2],xout[,1]-xout[,2]),type="blp",
+lty=c(1),pch=16,xlab='sqrt(Time)',main='Residual',ylab='');abline(h=0)
+
+legend("topright", legend = c("Data", "Fit",'Residual'),lty=c(3,1),lwd=c(4,2),col=c(1,2,3))
+findFDGtheta=rbind(findFDGtheta,o$pars)
+ERR=c(ERR,o$err)
+
+REAL=NULL
+for (r in 2:(nb-1)){
+realt=tt[r]
+realz=lv[r]
+zx=lv[-r] ; tx=tt[-r] ; wt=zx*0+1;tmz=tx[order(-zx)[1]]
+o=Model(tx,zx,wt,tmz,shift,d,phi,Upper,Lower,la,pi0,icovj)
+x= o$out; z=x[,1];zh=x[,2]
+RR=(approx(c(tx),c(zh),realt,method = "linear", rule = 2)$y-realz)^2
+RRR=RR
+REAL=c(REAL,RRR)
+}
+REAL=REAL[-(order(-lv)[1]-1)]
+
+CVE=c(CVE,REAL)
+FTE=c(FTE,(oooo2-oooo1)^2)
+TIME=c(TIME,tt)
+
+S1=sum(REAL)/(length(tt)-3)
+
+S1S=c(S1S,S1)
+err1=sum((oooo2-oooo1)^2)/length(oooo1)
+ERR1=c(ERR1,err1)
+
+Sys.sleep(0)
+}
+
+ddd=cbind(ERR1,S1S,GCVs,LAs,thetal)
+write.table(file=paste('FDGstep3','.txt'),
+(ddd),append=T,col.names=FALSE,quote=FALSE,row.names=FALSE)
