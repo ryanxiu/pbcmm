@@ -1,0 +1,313 @@
+########## PBCMM ##########
+
+### Gamma components given parameters of the distributions
+
+Comp <- function(tx,alpha,beta,d,LAM){
+BS=NULL
+for (i in 1:length(LAM)){
+#Curve of first arrival at right ventricle
+#Convolution between gamma and indicator function 
+RV = ifelse((tx-d)*beta>0,
+pgamma(tx*beta,alpha)-pgamma((tx-d)*beta,alpha),
+pgamma(tx*beta,alpha))
+
+#Approximate the convolution between gamma and exp to gamma 
+m=alpha/beta+1./LAM[i]
+v=alpha/(beta*beta)+1./(LAM[i]*LAM[i])
+alphas=m*m/v
+betas=m/v
+bS = ifelse((tx-d)*betas>0,pgamma(tx*betas,alphas)-pgamma((tx-d)*betas,alphas),pgamma(tx*betas,alphas))
+#Components matrix
+BS = cbind(BS,bS)
+}
+MS=scale(BS,center=FALSE,scale=apply(BS,2,max))
+MS
+}
+
+### Fit linear parameters
+
+Model <- function(tx,zx,wt,tmz,shift,d,phi,Upper,Lower)  {
+#Non-linear parameters are function of phi
+vv=ifelse(phi<=4,phi,4) ; v=ifelse(vv>=(-4),vv,(-4)) ; p = exp(v)/(1+exp(v)) #0.018<p<0.982
+j=1 ; alpha = Lower[j]+p[j]*(Upper[j]-Lower[j])
+j=2 ; beta  = Lower[j]+p[j]*(Upper[j]-Lower[j])
+for(j in 3:length(p)){LAM[j-2] = Lower[j]+p[j]*(Upper[j]-Lower[j])}
+o = Comp(tx,alpha,beta,d,LAM) 
+#Shift the curve 
+tmb=tx[order(-o[,1])[1]] 
+del = tmz-tmb+shift
+SFD = matrix(0,nrow(o),ncol(o))
+for (i in 1:length(LAM)){
+SFD[,i] = approx(tx,o[,i],xout=tx-del,yleft=0,rule=2)$y 
+}
+xx = SFD
+xmx = t(xx) %*% diag(wt) %*% xx ; DM=xmx  #DM coefficient for quadratic term
+dvec = t(xx) %*%c(sqrt(wt)*zx) ; AM=diag(rep(1,ncol(xx))) #dvec coefficient for linear term; AM constraint 
+AM[2,1]=-1
+AM[1,2]=1;AM[3,2]=1
+bvec=c(0,1,0)
+#theta is the optimised linear coefficient 
+PD=nearPD(DM)
+DM=as.matrix(PD$mat)
+o = solve.QP(DM,dvec,AM,bvec) ; theta=o$solution ; pred=xx%*% theta ; err= sum((zx-pred)^2*wt) 
+comp=NULL
+for (i in 1:length(theta)){comp=cbind(comp,xx[,i]*theta[i])} 
+f <- new.env()
+f$pred=pred ; f$comp=comp
+f$theta=theta ; f$err = sum(wt*(zx-pred)^2)
+f$out=cbind(zx,pred,comp)
+f
+}
+
+### SSE
+
+SSERR <- function(phi,data,duration)
+{
+RESI=NULL
+TIME=NULL
+ERR=NULL
+ERR1=NULL
+THETA=NULL
+x=data
+m=x
+for (kkk in 1:nc) {
+nb=m[1];m=m[-1];y=matrix(m[c(1:(2*nb))],ncol=2,byrow=T);m=m[-c(1:(2*nb))] 
+ti=y[,1];curve=y[,2]
+tt=ti;lv=curve
+zx=lv ; tx=tt ; wt=zx*0+1;tmz=tx[order(-zx)[1]]
+RES=NULL
+for (shift in seq(-1,1,len=21)){ # the grid search to find the optimum shift (delay)
+d=duration[kkk]
+#Calculate the boundry
+Lower=c(1,1,c(10,.1,.001)/10)
+Upper=c(2.2,8,9*c(10,.1,.001))
+#Logit transform to the propotion of non-linear parameters lying between the boundry   
+o=Model(tx,zx,wt,tmz,shift,d,phi,Upper,Lower)
+zh=o$pred
+RS=sum((zh-zx)^2)/length(zh)
+RSS=RS
+RES=c(RES,RSS)}
+shift=seq(-1,1,len=21)[which.min(RES)]
+o=Model(tx,zx,wt,tmz,shift,d,phi,Upper,Lower)
+zh=o$pred
+ERR=c(ERR,o$err)
+oooo1=zx
+oooo2=zh
+RESI=c(RESI,oooo2-oooo1)
+TIME=c(TIME,tt)
+err1=sum((oooo2-oooo1)^2)/length(oooo1)
+ERR1=c(ERR1,err1)
+}
+SERR=sum(ERR)
+SERR1=sum(ERR1)
+f <- new.env()
+f$RESI=RESI ; f$TIME=TIME 
+f$SERR=SERR ; f$SERR1=SERR1
+f
+}
+
+ff <- function(tau,delta,phi0,data,duration) {
+phi=phi0+tau*delta
+f=SSERR(phi,data,duration) 
+#f$err
+f$SERR1
+}
+
+###Optimization
+
+OptMod <- function(alpha,beta,LAM,data,duration){
+LOAD=NULL
+Lower=c(1,1,c(10,.1,.001)/10)
+Upper=c(2.2,8,9*c(10,.1,.001))
+phi=rep(0,2+length(LAM))
+u=(alpha-Lower[1])/(Upper[1]-Lower[1]); phi[1]=log(u/(1-u))
+v=(beta-Lower[2])/(Upper[2]-Lower[2]); phi[2]=log(v/(1-v))
+for (i in 3:length(phi)){v=(LAM[i-2]-Lower[i])/(Upper[i]-Lower[i]) ; phi[i]=log(v/(1-v))}
+fo=SSERR(phi) ;SERR1=fo$SERR1;SERR2=fo$SERR2;RESI=fo$RESI
+tol=.1e-8 ; maxit=20; cgce=tol+1;iter=0
+err=SERR1
+while(cgce>tol&iter<maxit) {
+
+	iter=iter+1; err0=err ; phi0=phi
+	sens=NULL 
+	for(j in 1:length(phi)) { phip=phi0;phip[j]=phip[j]+.01
+			fd=SSERR(phip,data,duration) ; sens=cbind(sens,(fd$RESI-RESI)/.01) }
+ 	v = apply(sens^2,2,sum) ; isens=ifelse(v>.1e-10,1,0) ; #xsens=scale(sens[,isens>0],center=FALSE,scale=v[isens>0])
+	rx = -RESI ; delta = ifelse(isens>0,lm(rx ~ 0+sens)$coef,0) #lm(rx ~ 0+sens,weights=wt)$coef/v ,0)
+	ftau=NULL ; for(tau in seq(-.25,2,length=50)) { ftau=c(ftau,ff(tau,delta,phi0)) }
+plot(seq(-.25,2,length=50),ftau) 
+	tau=seq(-.25,2,length=50)[order(ftau)[1]]
+	tau=optimize(ff,c(tau-.2,tau+.2),delta,phi0,data,duration)$minimum
+
+	phi=phi0+tau*delta
+
+	fo=SSERR(phi)
+	SERR1=fo$SERR1;SERR2=fo$SERR2;RESI=fo$RESI
+ TIME=fo$TIME
+  err=SERR1
+   err2=SERR1
+	cgce=err0-err2
+LOAD=rbind(LOAD,c(SERR1,SERR2))
+print(round(c(iter,tau,err,err0),4))
+}
+#par(mfrow=c(2,2))
+#matplot((tx),cbind(zx,zxh,zx-zxh),type="blp",lty=c(1),pch=1);abline(h=0)
+#matplot((tx),cbind(zx,zxh,fo$comp),type="plllllllllll",col=c(1,seq(from=1,to=ncol(fo$comp)+1,len=ncol(fo$comp)+1)),pch=16,lty=c(2,rep(1,ncol(fo$comp)+1)));abline(v=tmz,col=4,lty=c(3));abline(h=0)
+#matplot(tx,cbind(zx,zxh,zx-zxh),type="plp",pch=c(16,1,1),lty=c(1),xlim=c(0,max(tx/10,2)));abline(v=tmz,col=4,lty=c(3));abline(h=0)
+#matplot((tx),cbind(zx,zxh,fo$comp),type="plllllllllll",col=c(1,seq(from=1,to=ncol(fo$comp)+1,len=ncol(fo$comp)+1)),pch=16,lty=c(2,rep(1,ncol(fo$comp)+1)),xlim=c(0,max(tx/10,2)));abline(v=tmz,col=4,lty=c(3));abline(h=0)
+	vv=ifelse(phi<=4,phi,4) ; v=ifelse(vv>=(-4),vv,(-4)) ; p = exp(v)/(1+exp(v))
+	j=1 ; alpha = Lower[j]+p[j]*(Upper[j]-Lower[j])
+j=2 ; beta  = Lower[j]+p[j]*(Upper[j]-Lower[j])
+for(j in 3:length(p)){LAM[j-2] = Lower[j]+p[j]*(Upper[j]-Lower[j])}
+
+
+f <- new.env()
+f$out=cbind(TIME,RESI) ; f$pars=c(alpha,beta,LAM) ; f$LOAD=LOAD
+print(iter,err)
+print(round(c(alpha,beta,LAM),4))
+f
+}
+
+### Ftting linear parameters with penalty term
+
+Modelp <- function(tx,zx,wt,tmz,shift,d,phi,Upper,Lower,la,pi0,icovj)  {
+#Non-linear parameters are function of phi
+vv=ifelse(phi<=4,phi,4) ; v=ifelse(vv>=(-4),vv,(-4)) ; p = exp(v)/(1+exp(v)) #0.018<p<0.982
+j=1 ; alpha = Lower[j]+p[j]*(Upper[j]-Lower[j])
+j=2 ; beta  = Lower[j]+p[j]*(Upper[j]-Lower[j])
+for(j in 3:length(p)){LAM[j-2] = Lower[j]+p[j]*(Upper[j]-Lower[j])}
+o = Comp(tx,alpha,beta,d,LAM) 
+#Shift the curve 
+tmb=tx[order(-o[,1])[1]] 
+del = tmz-tmb+shift
+SFD = matrix(0,nrow(o),ncol(o))
+for (i in 1:length(LAM)){
+SFD[,i] = approx(tx,o[,i],xout=tx-del,yleft=0,rule=2)$y 
+}
+xx = SFD
+xmx = t(xx) %*% diag(wt) %*% xx ; DM=xmx  #DM coefficient for quadratic term
+DM2=DM+diag(rep(la,length(LAM)))%*%icovj
+PD=nearPD(DM2)
+DM2=as.matrix(PD$mat)
+dvec = t(t(xx) %*%c(sqrt(wt)*zx)); AM=diag(rep(1,ncol(xx))) #dvec coefficient for linear term; AM constraint 
+AM[2,1]=-1
+AM[1,2]=1;AM[3,2]=1
+bvec=c(0,0.99,0)
+dvec2=dvec+la*t(pi0)%*%icovj
+#theta is the optimised linear coefficient 
+
+AAmat=t(xx)%*%xx+nrow(xx)*la*diag(rep(1,ncol(xx)))
+out=eigen(AAmat,symmetric=T);g=out$vec;v=Re(out$val)
+invA=g%*%diag(1/v)%*%t(g)
+dof=(1/nrow(xx)*sum(diag(diag(rep(1,nrow(xx)))-xx%*%invA%*%t(xx))))^2
+
+#o = solve.QP(DM,dvec,AM) 
+o = solve.QP(DM2,dvec2,AM,bvec); theta=o$solution ; pred=xx%*% theta ; err= sum((zx-pred)^2*wt) 
+comp=NULL
+for (i in 1:length(theta)){comp=cbind(comp,xx[,i]*theta[i])} 
+f <- new.env()
+f$pred=pred ; f$comp=comp ;f$xx=xx
+f$theta=theta ; f$err = sum(wt*(zx-pred)^2) ;f$GCV = sum(wt*(zx-pred)^2)/dof
+f$out=cbind(zx,pred,comp)
+f
+}
+
+########## TE ###########
+
+### Find time break
+
+findt <- function(tx,zx){
+tp=tx[order(-zx)[1]]
+t0=tx[which(zx[tx<tp]<0.02)[length(which(zx[tx<tp]<0.02))]]
+f <- new.env()
+f$tp=tp ; f$t0=t0
+f$t1=tx[tx<=t0] ; f$t2=tx[tx>=t0&tx<=tp] ; f$t3=tx[tx>=tp]
+f$z1=zx[tx<=t0] ; f$z2=zx[tx>=t0&tx<=tp] ; f$z3=zx[tx>=tp]
+f
+}
+
+pred1 <- function(t1){
+rep(0,length(t1))
+}
+
+pred2 <- function(t2,AI){
+sum(AI)*(t2-t2[which.min(t2)])/(t2[length(t2)]-t2[1])
+}
+
+texp3 <- function(t3,AI,LAM){
+EXC=NULL
+for (i in 1:length(LAM)){
+exc <- AI[i]*exp(-LAM[i]*(t3-t3[which.min(t3)]))
+EXC=cbind(EXC,exc)
+}
+f <- new.env()
+f$comp = EXC
+f$pred3 = apply(EXC,1,sum)
+f
+}
+
+predA <- function(tx,zx,A1,A2,A3,LAM1,LAM2,LAM3){
+AI=c(A1,A2,A3)
+LAM=c(LAM1,LAM2,LAM3)
+t1 = findt(tx,zx)$t1
+t2 = findt(tx,zx)$t2
+t3 = findt(tx,zx)$t3
+
+predA=c(pred1(t1),pred2(t2,AI),texp3(t3,AI,LAM)$pred3)
+tA=c(t1,t2,t3)
+predA = predA[-length(t1)]
+predA = predA[-(length(t1)+length(t2)-1)]
+tA = tA[-length(t1)]
+tA = tA[-(length(t1)+length(t2)-1)]
+predA
+}
+
+########## CTE ##########
+
+Com <- function(t2,d,LAM){
+BS=NULL
+for (i in 1:length(LAM)){
+beta=LAM[i]
+RV = ifelse((t2-d)*beta>0,
+pgamma(t2*beta,1)-pgamma((t2-d)*beta,1),
+pgamma(t2*beta,1))
+S = ifelse((t2-d)*beta>0,pgamma(t2*beta,1)-pgamma((t2-d)*beta,1),pgamma(t2*beta,1))
+#Components matrix
+BS = cbind(BS,bS)
+}
+MS=scale(BS,center=FALSE,scale=apply(BS,2,max))
+MS
+}
+
+Pred1 <- function(t1){
+rep(0,length(t1))
+}
+
+Pred2 <- function(t2,d,LAM,AIS){
+xx <- Com(t2,d,LAM)
+pred = xx%*%AIS
+pred
+}
+
+predA <- function(tx,zx,A1,A2,A3,LAM1,LAM2,LAM3,d){
+LAM=c(LAM1,LAM2,LAM3)
+AIS=c(A1,A2,A3)
+t1 = findt2(tx,zx)$t1
+t2 = findt2(tx,zx)$t2-findt2(tx,zx)$t0
+predA=c(Pred1(t1),Pred2(t2,d,LAM,AIS))
+predA=predA[-length(t1)]
+predA
+}
+
+findt2 <- function(tx,zx){
+tp=tx[order(-zx)[1]]
+t0=tx[which(zx[tx<tp]<0.02)[length(which(zx[tx<tp]<0.02))]]
+f <- new.env()
+f$tp=tp ; f$t0=t0
+f$t1=tx[tx<=t0] ; f$t2=tx[tx>=t0]
+f$z1=zx[tx<=t0] ; f$z2=zx[tx>=t0]
+f$t0=t0
+f
+}
+
+########## ##########
